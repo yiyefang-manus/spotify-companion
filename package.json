@@ -1,0 +1,105 @@
+{
+  "name": "spotify-companion",
+  "version": "1.0.0",
+  "description": "A translucent Spotify companion bar for macOS with playback controls, synced lyrics, waveform visualization, and auto-updates",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build": "electron-builder --mac",
+    "build:dmg": "electron-builder --mac dmg",
+    "build:dir": "electron-builder --mac dir",
+    "build:publish": "electron-builder --mac --publish always",
+    "release": "electron-builder --mac --publish always",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "keywords": ["spotify", "companion", "lyrics", "electron", "macos", "auto-update"],
+  "author": "oneleaf",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yiyefyy/spotify-companion.git"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.9",
+    "node-fetch": "^3.3.2"
+  },
+  "build": {
+    "appId": "com.oneleaf.spotify-companion",
+    "productName": "Spotify Companion",
+    "copyright": "Copyright © 2024 oneleaf",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "yiyefyy",
+        "repo": "spotify-companion",
+        "releaseType": "release"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.music",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["arm64"]
+        },
+        {
+          "target": "zip",
+          "arch": ["arm64"]
+        }
+      ],
+      "darkModeSupport": true,
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "extendInfo": {
+        "CFBundleURLTypes": [
+          {
+            "CFBundleURLName": "Spotify Companion Auth",
+            "CFBundleURLSchemes": ["spotify-companion"]
+          }
+        ]
+      }
+    },
+    "dmg": {
+      "title": "Spotify Companion",
+      "icon": "build/icon.icns",
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "index.html",
+      "renderer.js",
+      "styles.css",
+      "liquid-bg.js",
+      "node_modules/**/*"
+    ],
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "protocols": [
+      {
+        "name": "Spotify Companion Auth",
+        "schemes": ["spotify-companion"]
+      }
+    ]
+  }
+}
