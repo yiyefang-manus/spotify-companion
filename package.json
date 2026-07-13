@@ -18,7 +18,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/yiyefyy/spotify-companion.git"
+    "url": "https://github.com/yiyefang-manus/spotify-companion.git"
   },
   "devDependencies": {
     "electron": "^33.0.0",
@@ -35,7 +35,7 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "yiyefyy",
+        "owner": "yiyefang-manus",
         "repo": "spotify-companion",
         "releaseType": "release"
       }
