@@ -1,6 +1,6 @@
 {
   "name": "spotify-companion",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "A translucent Spotify companion bar for macOS with playback controls, synced lyrics, waveform visualization, and auto-updates",
   "main": "main.js",
   "scripts": {

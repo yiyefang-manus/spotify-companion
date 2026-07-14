@@ -111,7 +111,7 @@ function createMainWindow() {
     height: 60,
     x: saved ? saved.x : undefined,
     y: saved ? saved.y : undefined,
-    minWidth: 420,
+    minWidth: 520,
     minHeight: 50,
     maxHeight: 350,
     frame: false,
@@ -172,7 +172,7 @@ ipcMain.handle('resize-for-player', () => {
       mainWindow.setMinimumSize(1, 1);
       mainWindow.setMaximumSize(10000, 10000);
       mainWindow.setBounds({ x: bounds.x, y: bounds.y - deltaH, width: bounds.width, height: newHeight });
-      mainWindow.setMinimumSize(420, 90);
+      mainWindow.setMinimumSize(520, 90);
       mainWindow.setMaximumSize(700, 140);
     });
   }
@@ -187,7 +187,7 @@ ipcMain.handle('resize-for-lyrics', () => {
       mainWindow.setMinimumSize(1, 1);
       mainWindow.setMaximumSize(10000, 10000);
       mainWindow.setBounds({ x: bounds.x, y: bounds.y - deltaH, width: bounds.width, height: newHeight });
-      mainWindow.setMinimumSize(420, 90);
+      mainWindow.setMinimumSize(520, 90);
       mainWindow.setMaximumSize(700, 140);
     });
   }
@@ -202,7 +202,7 @@ ipcMain.handle('resize-no-lyrics', () => {
       mainWindow.setMinimumSize(1, 1);
       mainWindow.setMaximumSize(10000, 10000);
       mainWindow.setBounds({ x: bounds.x, y: bounds.y - deltaH, width: bounds.width, height: newHeight });
-      mainWindow.setMinimumSize(420, 90);
+      mainWindow.setMinimumSize(520, 90);
       mainWindow.setMaximumSize(700, 140);
     });
   }
@@ -226,6 +226,7 @@ ipcMain.handle('resize-for-settings', (event, requestedHeight) => {
       mainWindow.setMinimumSize(1, 1);
       mainWindow.setMaximumSize(10000, 10000);
       mainWindow.setBounds({ x: bounds.x, y: bounds.y - deltaH, width: bounds.width, height: newHeight });
+      mainWindow.setMinimumSize(520, 90);
       mainWindow.setMaximumSize(700, 400);
     });
   }
@@ -240,6 +241,7 @@ ipcMain.handle('resize-for-devices', (event, requestedHeight) => {
       mainWindow.setMinimumSize(1, 1);
       mainWindow.setMaximumSize(10000, 10000);
       mainWindow.setBounds({ x: bounds.x, y: bounds.y - deltaH, width: bounds.width, height: newHeight });
+      mainWindow.setMinimumSize(520, 90);
       mainWindow.setMaximumSize(700, 400);
     });
   }
@@ -256,13 +258,13 @@ ipcMain.handle('resize-for-mini', () => {
 
     programmaticResize(() => {
       const newHeight = 60;
-      const newWidth = 280;
+      const newWidth = 320;
       const deltaH = newHeight - bounds.height;
       mainWindow.setMinimumSize(1, 1);
       mainWindow.setMaximumSize(10000, 10000);
       mainWindow.setBounds({ x: bounds.x, y: bounds.y - deltaH, width: newWidth, height: newHeight });
-      mainWindow.setMinimumSize(200, 50);
-      mainWindow.setMaximumSize(350, 70);
+      mainWindow.setMinimumSize(250, 50);
+      mainWindow.setMaximumSize(400, 70);
     });
   }
 });
@@ -282,7 +284,7 @@ ipcMain.handle('resize-from-mini', () => {
       mainWindow.setMinimumSize(1, 1);
       mainWindow.setMaximumSize(10000, 10000);
       mainWindow.setBounds({ x: newX, y: bounds.y - deltaH, width: newWidth, height: newHeight });
-      mainWindow.setMinimumSize(420, 90);
+      mainWindow.setMinimumSize(520, 90);
       mainWindow.setMaximumSize(700, 140);
     });
   }

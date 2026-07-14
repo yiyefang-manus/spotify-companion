@@ -14,6 +14,7 @@ let currentProgressMs = 0;
 let liquidBg = null;
 let bassPulseInterval = null;
 let panelOpen = false; // Prevents resize while settings/devices panels are open
+let isMiniMode = false; // Track mini mode state globally
 let controlCooldownUntil = 0; // Prevents polling from overwriting shuffle/repeat state during cooldown
 let lastPollTimestamp = 0;
 let isOffline = false;
@@ -25,7 +26,8 @@ let consecutiveErrors = 0; // Track consecutive API failures for offline detecti
 // A one-shot timer fires exactly when the next lyric line should appear.
 let syncBaseTime = 0;         // performance.now() value when progress was 0
 let lyricLineTimer = null;    // the scheduled one-shot setTimeout id
-const DRIFT_THRESHOLD = 1500; // ms — re-sync only if drift exceeds this
+const DRIFT_THRESHOLD = 800;  // ms — re-sync if drift exceeds this (tighter for better sync)
+const LYRICS_OFFSET_MS = -200; // ms — negative = lyrics appear slightly earlier (compensates for display latency)
 
 // ─── Elements ────────────────────────────────────────────────────────────────
 const setupScreen = document.getElementById('setup-screen');
@@ -192,6 +194,8 @@ async function init() {
 }
 
 // ─── Auth ────────────────────────────────────────────────────────────────────
+let authTimeout = null;
+
 connectBtn.addEventListener('click', async () => {
   const id = clientIdInput.value.trim();
   if (!id) return;
@@ -203,6 +207,14 @@ connectBtn.addEventListener('click', async () => {
   try {
     await window.electronAPI.spotifyAuth({ clientId });
     connectBtn.textContent = 'Waiting...';
+    // Timeout: reset after 60s if no callback received
+    if (authTimeout) clearTimeout(authTimeout);
+    authTimeout = setTimeout(() => {
+      if (connectBtn.textContent === 'Waiting...') {
+        connectBtn.textContent = 'Connect';
+        connectBtn.disabled = false;
+      }
+    }, 60000);
   } catch (err) {
     console.error('Auth failed:', err);
     connectBtn.textContent = 'Connect';
@@ -227,6 +239,7 @@ window.electronAPI.onAuthSuccess((data) => {
 });
 
 window.electronAPI.onAuthCodeReceived(async (code) => {
+  if (authTimeout) { clearTimeout(authTimeout); authTimeout = null; }
   const result = await window.electronAPI.exchangeCode({
     code,
     clientId,
@@ -335,7 +348,12 @@ async function fetchCurrentPlayback() {
   consecutiveErrors = 0;
 
   const wasPlaying = isPlaying;
-  isPlaying = data.is_playing;
+  // Don't override play state during play/pause cooldown
+  if (Date.now() < playCooldownUntil) {
+    // Still update progress and other data, but skip play state
+  } else {
+    isPlaying = data.is_playing;
+  }
   updatePollRate(); // Adaptive polling: 1.5s playing, 5s paused
   // Only update shuffle/repeat from API if not in cooldown (prevents overwriting optimistic UI)
   if (Date.now() > controlCooldownUntil) {
@@ -425,6 +443,8 @@ function updateUI(data) {
     albumArt.src = img.url;
     albumArt.classList.remove('hidden');
     noArt.classList.add('hidden');
+    // Update album art background if in album mode
+    if (typeof updateAlbumBackground === 'function') updateAlbumBackground();
   } else {
     albumArt.classList.add('hidden');
     noArt.classList.remove('hidden');
@@ -481,6 +501,14 @@ function getInterpolatedProgress() {
 }
 
 /**
+ * Get the interpolated progress adjusted for lyrics display offset.
+ * Used only by the lyrics engine to show lines slightly earlier.
+ */
+function getLyricsProgress() {
+  return getInterpolatedProgress() - LYRICS_OFFSET_MS;
+}
+
+/**
  * Binary search for the current lyric line index at a given time.
  * Returns the index of the last line whose timestamp <= progressMs,
  * or -1 if before the first line.
@@ -519,7 +547,7 @@ function scheduleNextLineChange() {
 
   if (!lyricsEnabled || syncedLyrics.length === 0 || !currentTrack) return;
 
-  const progress = getInterpolatedProgress();
+  const progress = getLyricsProgress();
   const idx = findLyricIndex(progress);
 
   // Update UI if line changed
@@ -531,7 +559,7 @@ function scheduleNextLineChange() {
       if (lyricsContainer && !lyricsContainer.classList.contains('has-lyrics')) {
         lyricsContainer.classList.add('has-lyrics');
         document.querySelector('.player-content').classList.add('has-lyrics');
-        if (!panelOpen) window.electronAPI.resizeForLyrics();
+        if (!panelOpen && !isMiniMode) window.electronAPI.resizeForLyrics();
       }
     } else {
       currentLyricEl.classList.remove('visible');
@@ -539,7 +567,7 @@ function scheduleNextLineChange() {
       if (lyricsContainer && lyricsContainer.classList.contains('has-lyrics')) {
         lyricsContainer.classList.remove('has-lyrics');
         document.querySelector('.player-content').classList.remove('has-lyrics');
-        if (!panelOpen) window.electronAPI.resizeNoLyrics();
+        if (!panelOpen && !isMiniMode) window.electronAPI.resizeNoLyrics();
       }
     }
   }
@@ -584,6 +612,10 @@ async function fetchSyncedLyrics(track) {
   cancelLyricSchedule(); // Cancel any pending line timer from previous track
   currentLyricEl.classList.remove('visible');
   currentLyricEl.textContent = '';
+  // Immediately collapse to no-lyrics height while fetching (prevents tall flicker)
+  if (lyricsContainer) lyricsContainer.classList.remove('has-lyrics');
+  document.querySelector('.player-content').classList.remove('has-lyrics');
+  if (!panelOpen && !isMiniMode) window.electronAPI.resizeNoLyrics();
 
   try {
     const artist = track.artists[0].name;
@@ -624,16 +656,34 @@ async function fetchSyncedLyrics(track) {
       }
     }
 
+    // Strategy 6: Netease (great for Chinese/Asian music)
+    if (!data || !data.syncedLyrics) {
+      const neteaseResult = await tryNetease(title, artist, duration);
+      if (neteaseResult) {
+        data = { syncedLyrics: neteaseResult };
+      }
+    }
+
     if (data && data.syncedLyrics) {
-      syncedLyrics = parseLRC(data.syncedLyrics);
+      syncedLyrics = typeof data.syncedLyrics === 'string' ? parseLRC(data.syncedLyrics) : data.syncedLyrics;
       console.log(`Lyrics loaded: ${syncedLyrics.length} lines`);
+      // Show lyrics container (may have been hidden by previous no-lyrics track)
+      if (lyricsContainer) lyricsContainer.style.display = 'block';
       // Kick off the LyricsX-style schedule chain
       scheduleNextLineChange();
     } else {
       console.log(`No synced lyrics found for: ${title} - ${artist}`);
-      // Hide lyrics area when no lyrics available
+      // No lyrics found: hide everything in the lyrics area
+      syncedLyrics = [];
+      currentLyricEl.classList.remove('visible');
+      currentLyricEl.textContent = '';
       if (lyricsContainer) {
         lyricsContainer.classList.remove('has-lyrics');
+        lyricsContainer.style.display = 'none';
+      }
+      document.querySelector('.player-content').classList.remove('has-lyrics');
+      if (!panelOpen && !isMiniMode) {
+        window.electronAPI.resizeNoLyrics();
       }
     }
   } catch (err) {
@@ -683,9 +733,75 @@ async function searchLrclib(query, trackDuration, artistHint) {
   return null;
 }
 
+/**
+ * Netease fallback provider - great for Chinese/Asian music.
+ * Uses a public proxy API to search and fetch synced lyrics.
+ */
+async function tryNetease(title, artist, duration) {
+  try {
+    // Clean title: remove feat., brackets, etc.
+    const cleanTitle = title.replace(/\s*[\(\[].*?[\)\]]/g, '').replace(/\s*[-–]\s*.*$/, '').trim();
+    const query = `${cleanTitle} ${artist}`;
+    const searchUrl = `https://music.xianqiao.wang/neteaseapiv2/search?limit=10&type=1&keywords=${encodeURIComponent(query)}`;
+    
+    const searchResp = await fetch(searchUrl);
+    if (!searchResp.ok) return null;
+    const searchData = await searchResp.json();
+    
+    const items = searchData?.result?.songs;
+    if (!items || items.length === 0) return null;
+    
+    // Find best match: MUST match both title AND artist to avoid wrong lyrics
+    const titleLower = cleanTitle.toLowerCase();
+    const artistLower = artist.toLowerCase();
+    
+    // Helper: check if a Netease result matches our track
+    const isMatch = (s) => {
+      const nameMatch = s.name.toLowerCase().includes(titleLower) || titleLower.includes(s.name.toLowerCase());
+      const artistMatch = s.artists && s.artists.some(a => 
+        a.name.toLowerCase().includes(artistLower) || artistLower.includes(a.name.toLowerCase())
+      );
+      return nameMatch && artistMatch;
+    };
+    
+    // First: find a result that matches title + artist + duration
+    let matchIdx = items.findIndex(s => isMatch(s) && Math.abs(Math.round(s.duration / 1000) - duration) <= 3);
+    // Second: match title + artist (any duration)
+    if (matchIdx === -1) {
+      matchIdx = items.findIndex(s => isMatch(s));
+    }
+    // If no verified match found, reject entirely (don't use random first result)
+    if (matchIdx === -1) return null;
+    
+    const songId = items[matchIdx].id;
+    const lyricUrl = `https://music.xianqiao.wang/neteaseapiv2/lyric?id=${songId}`;
+    const lyricResp = await fetch(lyricUrl);
+    if (!lyricResp.ok) return null;
+    const lyricData = await lyricResp.json();
+    
+    const lrcStr = lyricData?.lrc?.lyric;
+    if (!lrcStr) return null;
+    
+    // Check if it's instrumental ("纯音乐, 请欣赏")
+    if (lrcStr.includes('纯音乐')) return null;
+    
+    // Verify it has actual timestamps
+    if (!/\[\d{2}:\d{2}/.test(lrcStr)) return null;
+    
+    console.log(`Lyrics found via Netease for: ${title} - ${artist}`);
+    return lrcStr; // Return raw LRC string to be parsed by parseLRC
+  } catch (e) {
+    console.log('Netease lyrics fetch failed:', e.message);
+    return null;
+  }
+}
+
 function parseLRC(lrcText) {
   const lines = lrcText.split('\n');
   const parsed = [];
+
+  // Metadata patterns to filter out (common in Netease/Chinese LRC files)
+  const metadataPattern = /^(作词|作曲|编曲|制作人|混音|母带|录音|和声|吉他|贝斯|鼓|键盘|弦乐|监制|出品|发行|OP|SP|词|曲|编|唱|by|Written|Composed|Arranged|Produced|Mixed|Mastered)\s*[:：]/i;
 
   for (const line of lines) {
     const match = line.match(/\[(\d{2}):(\d{2})\.(\d{2,3})\]\s*(.*)/);
@@ -695,7 +811,8 @@ function parseLRC(lrcText) {
       const ms = parseInt(match[3].padEnd(3, '0'));
       const time = mins * 60000 + secs * 1000 + ms;
       const text = match[4].trim();
-      if (text) {
+      // Skip empty lines and metadata lines
+      if (text && !metadataPattern.test(text)) {
         parsed.push({ time, text });
       }
     }
@@ -708,7 +825,13 @@ function parseLRC(lrcText) {
 // The old linear-scan + polling approach is no longer used.
 
 // ─── Controls ───────────────────────────────────────────────────────────────
+let playCooldownUntil = 0; // Prevents polling from overwriting play/pause state during cooldown
+
 btnPlay.addEventListener('click', async () => {
+  // Debounce: ignore rapid clicks within 600ms
+  if (Date.now() < playCooldownUntil) return;
+  playCooldownUntil = Date.now() + 2000; // 2s cooldown
+
   // Optimistic UI update immediately
   isPlaying = !isPlaying;
   if (isPlaying) {
@@ -735,8 +858,11 @@ btnPlay.addEventListener('click', async () => {
   } else {
     await spotifyFetch('/me/player/play', { method: 'PUT' });
   }
-  // Confirm with server after a short delay
-  setTimeout(fetchCurrentPlayback, 500);
+  // Confirm with server after cooldown expires
+  setTimeout(() => {
+    playCooldownUntil = 0;
+    fetchCurrentPlayback();
+  }, 2000);
 });
 
 btnNext.addEventListener('click', async () => {
@@ -938,7 +1064,7 @@ const sizePreview = document.getElementById('size-preview');
 
 // Load saved settings
 let currentTheme = localStorage.getItem('spotify_theme') || 'light';
-let currentLyricsSize = parseInt(localStorage.getItem('spotify_lyrics_size') || '11', 10);
+let currentLyricsSize = parseInt(localStorage.getItem('spotify_lyrics_size') || '13', 10);
 
 function applyTheme(theme) {
   currentTheme = theme;
@@ -973,7 +1099,7 @@ btnSettings.addEventListener('click', async () => {
     // Expand window upward for settings panel
     const hasLyrics = lyricsEnabled && syncedLyrics.length > 0;
     const baseHeight = hasLyrics ? 125 : 105;
-    const totalHeight = baseHeight + 80; // settings panel height
+    const totalHeight = baseHeight + 120; // settings panel height (3 rows)
     await window.electronAPI.resizeForSettings(totalHeight);
   } else {
     closeSettingsPanel();
@@ -1010,6 +1136,71 @@ document.addEventListener('click', (e) => {
     closeSettingsPanel();
   }
 });
+
+// ─── Background Mode ────────────────────────────────────────────────────────
+const bgAnimatedBtn = document.getElementById('bg-animated');
+const bgStaticBtn = document.getElementById('bg-static');
+const bgFrostedBtn = document.getElementById('bg-frosted');
+const bgAlbumBtn = document.getElementById('bg-album');
+const albumBgEl = document.getElementById('album-bg');
+const frostedBgEl = document.getElementById('frosted-bg');
+// liquidCanvas already declared at top of file
+
+let currentBgMode = localStorage.getItem('spotify_bg_mode') || 'animated';
+
+function applyBgMode(mode) {
+  currentBgMode = mode;
+  localStorage.setItem('spotify_bg_mode', mode);
+
+  // Update button active states
+  [bgAnimatedBtn, bgStaticBtn, bgFrostedBtn, bgAlbumBtn].forEach(btn => btn.classList.remove('active'));
+  if (mode === 'animated') bgAnimatedBtn.classList.add('active');
+  else if (mode === 'static') bgStaticBtn.classList.add('active');
+  else if (mode === 'frosted') bgFrostedBtn.classList.add('active');
+  else if (mode === 'album') bgAlbumBtn.classList.add('active');
+
+  // Hide all alternative backgrounds
+  albumBgEl.classList.add('hidden');
+  frostedBgEl.classList.add('hidden');
+
+  switch (mode) {
+    case 'animated':
+      liquidCanvas.style.display = '';
+      if (liquidBg) liquidBg.start();
+      break;
+    case 'static':
+      liquidCanvas.style.display = '';
+      if (liquidBg) liquidBg.freeze();
+      break;
+    case 'frosted':
+      liquidCanvas.style.display = 'none';
+      if (liquidBg) liquidBg.stop();
+      frostedBgEl.classList.remove('hidden');
+      break;
+    case 'album':
+      liquidCanvas.style.display = 'none';
+      if (liquidBg) liquidBg.stop();
+      albumBgEl.classList.remove('hidden');
+      updateAlbumBackground();
+      break;
+  }
+}
+
+function updateAlbumBackground() {
+  if (currentBgMode !== 'album') return;
+  const albumArtImg = document.getElementById('album-art');
+  if (albumArtImg && albumArtImg.src) {
+    albumBgEl.style.backgroundImage = `url(${albumArtImg.src})`;
+  }
+}
+
+bgAnimatedBtn.addEventListener('click', () => applyBgMode('animated'));
+bgStaticBtn.addEventListener('click', () => applyBgMode('static'));
+bgFrostedBtn.addEventListener('click', () => applyBgMode('frosted'));
+bgAlbumBtn.addEventListener('click', () => applyBgMode('album'));
+
+// Apply saved background mode on load
+applyBgMode(currentBgMode);
 
 // ─── Offline Status ─────────────────────────────────────────────────────────
 function showOfflineStatus() {
@@ -1192,7 +1383,6 @@ document.addEventListener('click', (e) => {
 });
 
 // ─── Mini Mode ───────────────────────────────────────────────────────────────
-let isMiniMode = false;
 const btnMini = document.getElementById('btn-mini');
 
 async function enterMiniMode() {

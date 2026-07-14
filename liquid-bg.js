@@ -256,18 +256,36 @@ const FRAGMENT_SHADER = `
 class LiquidBackground {
   constructor(canvas) {
     this.canvas = canvas;
-    this.gl = canvas.getContext('webgl', { alpha: true, premultipliedAlpha: false });
+    this.gl = canvas.getContext('webgl', {
+      alpha: true,
+      premultipliedAlpha: false,
+      antialias: false,
+      powerPreference: 'low-power'
+    });
     if (!this.gl) {
       console.error('WebGL not available');
       return;
     }
 
-    this.energy = 0.0;
-    this.targetEnergy = 0.0;
+    // Fixed energy/bass for a constant smooth animation
+    this.energy = 0.35;
+    this.targetEnergy = 0.35;
     this.bass = 0.0;
     this.targetBass = 0.0;
-    this.startTime = Date.now();
+    this.startTime = performance.now();
+    this.lastFrameTime = this.startTime;
     this.animId = null;
+    this.isFrozen = false;
+    // Render at reduced resolution for smooth performance on Retina displays
+    this.renderScale = 0.5;
+
+    // Re-render a single frame on window resize when frozen (static mode)
+    this._onResize = () => {
+      if (this.isFrozen) {
+        this._renderOneFrame();
+      }
+    };
+    window.addEventListener('resize', this._onResize);
 
     this.init();
   }
@@ -319,9 +337,9 @@ class LiquidBackground {
   }
 
   resize() {
-    const dpr = window.devicePixelRatio || 1;
-    const w = this.canvas.clientWidth * dpr;
-    const h = this.canvas.clientHeight * dpr;
+    const dpr = (window.devicePixelRatio || 1) * this.renderScale;
+    const w = Math.round(this.canvas.clientWidth * dpr);
+    const h = Math.round(this.canvas.clientHeight * dpr);
     if (this.canvas.width !== w || this.canvas.height !== h) {
       this.canvas.width = w;
       this.canvas.height = h;
@@ -329,26 +347,31 @@ class LiquidBackground {
     }
   }
 
-  setEnergy(val) { this.targetEnergy = val; }
-  setBass(val) { this.targetBass = val; }
+  setEnergy(val) { /* no-op: animation is constant */ }
+  setBass(val) { /* no-op: animation is constant */ }
 
   setPlaying(playing) {
-    this.targetEnergy = playing ? 0.6 : 0.15;
+    // Animation stays the same whether playing or stopped
   }
 
   pulse() {
-    this.targetBass = 1.0;
-    setTimeout(() => { this.targetBass = 0.0; }, 300);
+    // No-op: animation is constant
   }
 
   render() {
     this.resize();
     const gl = this.gl;
 
-    this.energy += (this.targetEnergy - this.energy) * 0.08;
-    this.bass += (this.targetBass - this.bass) * 0.12;
+    // Smooth interpolation with frame-rate independent lerp
+    const now = performance.now();
+    const dt = Math.min((now - this.lastFrameTime) / 1000.0, 0.1); // cap at 100ms
+    this.lastFrameTime = now;
+    const lerpFactor = 1.0 - Math.pow(0.001, dt);
 
-    const elapsed = (Date.now() - this.startTime) / 1000.0;
+    this.energy += (this.targetEnergy - this.energy) * lerpFactor;
+    this.bass += (this.targetBass - this.bass) * lerpFactor * 1.5;
+
+    const elapsed = (now - this.startTime) / 1000.0;
 
     gl.uniform2f(this.uResolution, this.canvas.width, this.canvas.height);
     gl.uniform1f(this.uTime, elapsed);
@@ -357,6 +380,40 @@ class LiquidBackground {
 
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     this.animId = requestAnimationFrame(() => this.render());
+  }
+
+  stop() {
+    if (this.animId) {
+      cancelAnimationFrame(this.animId);
+      this.animId = null;
+    }
+  }
+
+  start() {
+    this.isFrozen = false;
+    if (!this.animId) {
+      this.lastFrameTime = performance.now();
+      this.render();
+    }
+  }
+
+  freeze() {
+    // Render one final frame then stop animation loop
+    this.isFrozen = true;
+    this._renderOneFrame();
+    this.stop();
+  }
+
+  _renderOneFrame() {
+    this.resize();
+    const gl = this.gl;
+    const now = performance.now();
+    const elapsed = (now - this.startTime) / 1000.0;
+    gl.uniform2f(this.uResolution, this.canvas.width, this.canvas.height);
+    gl.uniform1f(this.uTime, elapsed);
+    gl.uniform1f(this.uEnergy, this.energy);
+    gl.uniform1f(this.uBass, this.bass);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
 
   destroy() {
