@@ -2,7 +2,7 @@ const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron');
 const path = require('path');
 const crypto = require('crypto');
 const fs = require('fs');
-const { autoUpdater } = require('electron-updater');
+const https = require('https');
 
 // Custom protocol scheme
 const PROTOCOL_SCHEME = 'spotify-companion';
@@ -418,83 +418,90 @@ app.on('activate', () => {
   }
 });
 
-// ─── Auto-Updater ─────────────────────────────────────────────────────────────
+// ─── Update Checker (no code signing required) ──────────────────────────────
 
-autoUpdater.autoDownload = true;
-autoUpdater.autoInstallOnAppQuit = true;
+const UPDATE_REPO_OWNER = 'yiyefang-manus';
+const UPDATE_REPO_NAME = 'spotify-companion';
 
-// Check for updates 5 seconds after app launches (gives window time to load)
-app.whenReady().then(() => {
-  setTimeout(() => {
-    autoUpdater.checkForUpdatesAndNotify().catch(err => {
-      console.log('Auto-update check failed:', err.message);
+function checkForUpdates() {
+  const currentVersion = app.getVersion();
+  const options = {
+    hostname: 'api.github.com',
+    path: `/repos/${UPDATE_REPO_OWNER}/${UPDATE_REPO_NAME}/releases/latest`,
+    headers: { 'User-Agent': 'spotify-companion' }
+  };
+
+  https.get(options, (res) => {
+    let data = '';
+    res.on('data', chunk => { data += chunk; });
+    res.on('end', () => {
+      try {
+        const release = JSON.parse(data);
+        const latestVersion = (release.tag_name || '').replace(/^v/, '');
+        if (!latestVersion) return;
+
+        if (isNewerVersion(currentVersion, latestVersion)) {
+          console.log(`Update available: v${latestVersion} (current: v${currentVersion})`);
+          // Find .dmg asset URL
+          const dmgAsset = (release.assets || []).find(a => a.name.endsWith('.dmg'));
+          const downloadUrl = dmgAsset
+            ? dmgAsset.browser_download_url
+            : release.html_url;
+
+          if (mainWindow) {
+            mainWindow.webContents.send('update-status', {
+              status: 'available',
+              version: latestVersion
+            });
+          }
+
+          dialog.showMessageBox(mainWindow, {
+            type: 'info',
+            title: 'Update Available',
+            message: `A new version (v${latestVersion}) is available.`,
+            detail: `You are currently on v${currentVersion}. Would you like to download the update?`,
+            buttons: ['Download', 'Later'],
+            defaultId: 0
+          }).then(({ response }) => {
+            if (response === 0) {
+              shell.openExternal(downloadUrl);
+            }
+          });
+        } else {
+          console.log(`App is up to date (v${currentVersion}).`);
+        }
+      } catch (err) {
+        console.log('Update check parse error:', err.message);
+      }
     });
-  }, 5000);
+  }).on('error', (err) => {
+    console.log('Update check failed:', err.message);
+  });
+}
+
+function isNewerVersion(current, latest) {
+  const c = current.split('.').map(Number);
+  const l = latest.split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    if ((l[i] || 0) > (c[i] || 0)) return true;
+    if ((l[i] || 0) < (c[i] || 0)) return false;
+  }
+  return false;
+}
+
+// Check for updates 5 seconds after app launches
+app.whenReady().then(() => {
+  setTimeout(() => checkForUpdates(), 5000);
 });
 
 // Also check periodically (every 4 hours)
-setInterval(() => {
-  autoUpdater.checkForUpdatesAndNotify().catch(err => {
-    console.log('Auto-update periodic check failed:', err.message);
-  });
-}, 4 * 60 * 60 * 1000);
-
-autoUpdater.on('update-available', (info) => {
-  console.log(`Update available: v${info.version}`);
-  if (mainWindow) {
-    mainWindow.webContents.send('update-status', {
-      status: 'available',
-      version: info.version
-    });
-  }
-});
-
-autoUpdater.on('update-not-available', () => {
-  console.log('App is up to date.');
-});
-
-autoUpdater.on('download-progress', (progress) => {
-  console.log(`Download progress: ${Math.round(progress.percent)}%`);
-  if (mainWindow) {
-    mainWindow.webContents.send('update-status', {
-      status: 'downloading',
-      percent: Math.round(progress.percent)
-    });
-  }
-});
-
-autoUpdater.on('update-downloaded', (info) => {
-  console.log(`Update downloaded: v${info.version}`);
-  if (mainWindow) {
-    mainWindow.webContents.send('update-status', {
-      status: 'downloaded',
-      version: info.version
-    });
-  }
-  // Show a dialog asking user to restart
-  dialog.showMessageBox(mainWindow, {
-    type: 'info',
-    title: 'Update Ready',
-    message: `Version ${info.version} has been downloaded.`,
-    detail: 'The update will be installed when you restart the app.',
-    buttons: ['Restart Now', 'Later'],
-    defaultId: 0
-  }).then(({ response }) => {
-    if (response === 0) {
-      autoUpdater.quitAndInstall();
-    }
-  });
-});
-
-autoUpdater.on('error', (err) => {
-  console.error('Auto-updater error:', err.message);
-});
+setInterval(() => checkForUpdates(), 4 * 60 * 60 * 1000);
 
 // IPC handler for manual update check from renderer
 ipcMain.handle('check-for-updates', async () => {
   try {
-    const result = await autoUpdater.checkForUpdates();
-    return { updateAvailable: !!result?.updateInfo };
+    checkForUpdates();
+    return { checked: true };
   } catch (err) {
     return { error: err.message };
   }
