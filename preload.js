@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getToken: () => ipcRenderer.invoke('get-token'),
   setToken: (data) => ipcRenderer.invoke('set-token', data),
   refreshToken: (clientId) => ipcRenderer.invoke('refresh-spotify-token', clientId),
+  logout: () => ipcRenderer.invoke('logout'),
 
   // Auth events
   onAuthSuccess: (callback) => ipcRenderer.on('auth-success', (event, data) => callback(data)),
@@ -21,6 +22,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   resizeForLyrics: () => ipcRenderer.invoke('resize-for-lyrics'),
   resizeNoLyrics: () => ipcRenderer.invoke('resize-no-lyrics'),
   resizeForSetup: () => ipcRenderer.invoke('resize-for-setup'),
+  resizeForPlaylist: (height) => ipcRenderer.invoke('resize-for-playlist', height),
   resizeForSettings: (height) => ipcRenderer.invoke('resize-for-settings', height),
   resizeForDevices: (height) => ipcRenderer.invoke('resize-for-devices', height),
   resizeForMini: () => ipcRenderer.invoke('resize-for-mini'),
@@ -29,9 +31,5 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Utilities
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
   quitApp: () => ipcRenderer.invoke('quit-app'),
-
-  // Auto-update
-  checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
-  getAppVersion: () => ipcRenderer.invoke('get-app-version'),
-  onUpdateStatus: (callback) => ipcRenderer.on('update-status', (event, data) => callback(data))
+  setVibrancy: (type) => ipcRenderer.invoke('set-vibrancy', type)
 });

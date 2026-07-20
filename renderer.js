@@ -20,6 +20,8 @@ let lastPollTimestamp = 0;
 let isOffline = false;
 let pollIntervalMs = 1500; // Adaptive: 1.5s when playing, 5s when paused
 let consecutiveErrors = 0; // Track consecutive API failures for offline detection
+let backoffMs = 0; // Exponential backoff delay added to poll interval on errors
+const MAX_BACKOFF = 30000; // Max 30s backoff
 
 // ─── LyricsX-style Sync State ───────────────────────────────────────────────
 // Instead of polling every 100ms, we store a base timestamp and interpolate.
@@ -70,10 +72,7 @@ function initLiquidBg() {
   try {
     liquidBg = new window.LiquidBackground(liquidCanvas);
     // LiquidBackground auto-starts rendering in its constructor (init → render loop).
-    // No .start() call needed.
-    window.addEventListener('resize', () => {
-      if (liquidBg) liquidBg.resize();
-    });
+    // The class already has its own resize listener, no need to add another.
   } catch (err) {
     console.warn('LiquidBackground init failed:', err);
     liquidBg = null;
@@ -186,8 +185,19 @@ async function init() {
   appInfo = await window.electronAPI.getAppInfo();
   const tokenData = await window.electronAPI.getToken();
   if (tokenData.accessToken && tokenData.tokenExpiry > Date.now()) {
+    // Valid token exists, go straight to player
     await showPlayer();
     startPolling();
+  } else if (tokenData.refreshToken && clientId) {
+    // Token expired but we have a refresh token - try to refresh
+    const refreshed = await window.electronAPI.refreshToken(clientId);
+    if (refreshed.accessToken && !refreshed.error) {
+      await showPlayer();
+      startPolling();
+    } else {
+      // Refresh failed (user may have revoked access), show setup
+      clientIdInput.value = clientId;
+    }
   } else if (clientId) {
     clientIdInput.value = clientId;
   }
@@ -314,10 +324,11 @@ function startPolling() {
 
 function schedulePoll() {
   if (pollInterval) clearTimeout(pollInterval);
+  const delay = pollIntervalMs + backoffMs;
   pollInterval = setTimeout(() => {
     fetchCurrentPlayback();
     schedulePoll();
-  }, pollIntervalMs);
+  }, delay);
 }
 
 function updatePollRate() {
@@ -333,11 +344,15 @@ async function fetchCurrentPlayback() {
   const data = await spotifyFetch('/me/player');
   if (!data) {
     consecutiveErrors++;
+    // Exponential backoff: 2s, 4s, 8s, 16s, 30s max
+    backoffMs = Math.min(MAX_BACKOFF, Math.pow(2, consecutiveErrors) * 1000);
     if (consecutiveErrors >= 3 && !isOffline) {
       isOffline = true;
       showOfflineStatus();
     }
     updateUI(null);
+    // Reschedule with backoff
+    schedulePoll();
     return;
   }
   // Connection restored
@@ -346,6 +361,7 @@ async function fetchCurrentPlayback() {
     hideOfflineStatus();
   }
   consecutiveErrors = 0;
+  backoffMs = 0;
 
   const wasPlaying = isPlaying;
   // Don't override play state during play/pause cooldown
@@ -410,9 +426,12 @@ async function fetchCurrentPlayback() {
       if (lyricsEnabled) {
         fetchSyncedLyrics(track);
       }
+      // Check if new track is liked
+      checkIfTrackLiked(track.id);
     } else if (isFirstTrack && lyricsEnabled) {
       // First load - fetch lyrics immediately
       fetchSyncedLyrics(track);
+      checkIfTrackLiked(track.id);
     }
 
     if (lyricsEnabled && syncedLyrics.length > 0) {
@@ -617,6 +636,21 @@ async function fetchSyncedLyrics(track) {
   document.querySelector('.player-content').classList.remove('has-lyrics');
   if (!panelOpen && !isMiniMode) window.electronAPI.resizeNoLyrics();
 
+  // Check lyrics cache first (works offline too)
+  const cached = getCachedLyrics(track.id);
+  if (cached) {
+    syncedLyrics = cached;
+    console.log(`Lyrics loaded from cache: ${syncedLyrics.length} lines`);
+    if (lyricsContainer) lyricsContainer.style.display = 'block';
+    scheduleNextLineChange();
+    if (!panelOpen && !isMiniMode) {
+      await window.electronAPI.resizeForLyrics();
+      if (lyricsContainer) lyricsContainer.classList.add('has-lyrics');
+      document.querySelector('.player-content').classList.add('has-lyrics');
+    }
+    return;
+  }
+
   try {
     const artist = track.artists[0].name;
     const title = track.name;
@@ -667,6 +701,8 @@ async function fetchSyncedLyrics(track) {
     if (data && data.syncedLyrics) {
       syncedLyrics = typeof data.syncedLyrics === 'string' ? parseLRC(data.syncedLyrics) : data.syncedLyrics;
       console.log(`Lyrics loaded: ${syncedLyrics.length} lines`);
+      // Cache lyrics for offline use
+      setLyricsCache(track.id, syncedLyrics);
       // Show lyrics container (may have been hidden by previous no-lyrics track)
       if (lyricsContainer) lyricsContainer.style.display = 'block';
       // Kick off the LyricsX-style schedule chain
@@ -1099,7 +1135,7 @@ btnSettings.addEventListener('click', async () => {
     // Expand window upward for settings panel
     const hasLyrics = lyricsEnabled && syncedLyrics.length > 0;
     const baseHeight = hasLyrics ? 125 : 105;
-    const totalHeight = baseHeight + 120; // settings panel height (3 rows)
+    const totalHeight = baseHeight + 170; // settings panel height (5 rows)
     await window.electronAPI.resizeForSettings(totalHeight);
   } else {
     closeSettingsPanel();
@@ -1163,6 +1199,21 @@ function applyBgMode(mode) {
   albumBgEl.classList.add('hidden');
   frostedBgEl.classList.add('hidden');
 
+  const needsLiquid = (mode === 'animated' || mode === 'static');
+
+  // Destroy WebGL when switching away from liquid modes to free GPU memory
+  if (!needsLiquid && liquidBg) {
+    liquidBg.destroy();
+    liquidBg = null;
+    liquidCanvas.style.display = 'none';
+  }
+
+  // Recreate WebGL when switching back to liquid modes
+  if (needsLiquid && !liquidBg) {
+    liquidCanvas.style.display = '';
+    initLiquidBg();
+  }
+
   switch (mode) {
     case 'animated':
       liquidCanvas.style.display = '';
@@ -1173,13 +1224,9 @@ function applyBgMode(mode) {
       if (liquidBg) liquidBg.freeze();
       break;
     case 'frosted':
-      liquidCanvas.style.display = 'none';
-      if (liquidBg) liquidBg.stop();
       frostedBgEl.classList.remove('hidden');
       break;
     case 'album':
-      liquidCanvas.style.display = 'none';
-      if (liquidBg) liquidBg.stop();
       albumBgEl.classList.remove('hidden');
       updateAlbumBackground();
       break;
@@ -1201,6 +1248,51 @@ bgAlbumBtn.addEventListener('click', () => applyBgMode('album'));
 
 // Apply saved background mode on load
 applyBgMode(currentBgMode);
+
+// ─── Background Opacity ─────────────────────────────────────────────────────
+const bgOpacitySlider = document.getElementById('bg-opacity-slider');
+const opacityPreview = document.getElementById('opacity-preview');
+let currentBgOpacity = parseInt(localStorage.getItem('spotify_bg_opacity') || '90', 10);
+
+function applyBgOpacity(value) {
+  currentBgOpacity = value;
+  localStorage.setItem('spotify_bg_opacity', value);
+  const opacity = value / 100;
+  opacityPreview.textContent = `${value}%`;
+  bgOpacitySlider.value = value;
+
+  // Apply opacity to all background elements
+  liquidCanvas.style.opacity = opacity;
+  albumBgEl.style.opacity = opacity;
+  frostedBgEl.style.opacity = opacity;
+}
+
+bgOpacitySlider.addEventListener('input', (e) => {
+  applyBgOpacity(parseInt(e.target.value, 10));
+});
+
+// Apply saved opacity on load
+applyBgOpacity(currentBgOpacity);
+
+// ─── Background Blur (native macOS vibrancy) ──────────────────────────
+const blurOnBtn = document.getElementById('blur-on');
+const blurOffBtn = document.getElementById('blur-off');
+let bgBlurEnabled = localStorage.getItem('spotify_bg_blur_enabled') !== 'false'; // default: on
+
+function applyBgBlur(enabled) {
+  bgBlurEnabled = enabled;
+  localStorage.setItem('spotify_bg_blur_enabled', enabled);
+  blurOnBtn.classList.toggle('active', enabled);
+  blurOffBtn.classList.toggle('active', !enabled);
+  // Use IPC to set native vibrancy
+  window.electronAPI.setVibrancy(enabled ? 'under-window' : null);
+}
+
+blurOnBtn.addEventListener('click', () => applyBgBlur(true));
+blurOffBtn.addEventListener('click', () => applyBgBlur(false));
+
+// Apply saved blur on load
+applyBgBlur(bgBlurEnabled);
 
 // ─── Offline Status ─────────────────────────────────────────────────────────
 function showOfflineStatus() {
@@ -1226,6 +1318,8 @@ window.addEventListener('offline', () => {
 });
 window.addEventListener('online', () => {
   isOffline = false;
+  consecutiveErrors = 0;
+  backoffMs = 0;
   hideOfflineStatus();
   fetchCurrentPlayback(); // Immediately try to reconnect
 });
@@ -1380,6 +1474,10 @@ document.addEventListener('click', (e) => {
       !btnDevices.contains(e.target)) {
     closeDevicesPanel();
   }
+  // Also hide context menu
+  if (contextMenu && !contextMenu.contains(e.target)) {
+    contextMenu.classList.add('hidden');
+  }
 });
 
 // ─── Mini Mode ───────────────────────────────────────────────────────────────
@@ -1423,6 +1521,152 @@ document.querySelector('.player-content').addEventListener('dblclick', async (e)
     await exitMiniMode();
   }
 });
+
+// ─── Like / Favorite Button ─────────────────────────────────────────────────
+const btnLike = document.getElementById('btn-like');
+const iconHeartOutline = document.getElementById('icon-heart-outline');
+const iconHeartFilled = document.getElementById('icon-heart-filled');
+let isCurrentTrackLiked = false;
+
+async function checkIfTrackLiked(trackId) {
+  if (!trackId) return;
+  const data = await spotifyFetch(`/me/tracks/contains?ids=${trackId}`);
+  if (data && Array.isArray(data)) {
+    isCurrentTrackLiked = data[0];
+    updateLikeUI();
+  }
+}
+
+function updateLikeUI() {
+  if (isCurrentTrackLiked) {
+    btnLike.classList.add('liked');
+    iconHeartOutline.classList.add('hidden');
+    iconHeartFilled.classList.remove('hidden');
+  } else {
+    btnLike.classList.remove('liked');
+    iconHeartOutline.classList.remove('hidden');
+    iconHeartFilled.classList.add('hidden');
+  }
+}
+
+btnLike.addEventListener('click', async () => {
+  if (!currentTrack) return;
+  // Optimistic UI
+  isCurrentTrackLiked = !isCurrentTrackLiked;
+  updateLikeUI();
+
+  if (isCurrentTrackLiked) {
+    const result = await spotifyFetch('/me/tracks', {
+      method: 'PUT',
+      body: JSON.stringify({ ids: [currentTrack.id] })
+    });
+    if (!result) { isCurrentTrackLiked = false; updateLikeUI(); }
+  } else {
+    const result = await spotifyFetch('/me/tracks', {
+      method: 'DELETE',
+      body: JSON.stringify({ ids: [currentTrack.id] })
+    });
+    if (!result) { isCurrentTrackLiked = true; updateLikeUI(); }
+  }
+});
+
+// ─── Custom Context Menu ────────────────────────────────────────────────────
+const contextMenu = document.getElementById('context-menu');
+const ctxLike = document.getElementById('ctx-like');
+const ctxShare = document.getElementById('ctx-share');
+const ctxOpenSpotify = document.getElementById('ctx-open-spotify');
+const ctxCopyName = document.getElementById('ctx-copy-name');
+const ctxCopyLink = document.getElementById('ctx-copy-link');
+
+// Show context menu on right-click in the player area (not on lyrics which has its own handler)
+playerScreen.addEventListener('contextmenu', (e) => {
+  // Don't override lyrics right-click
+  if (e.target === currentLyricEl || currentLyricEl.contains(e.target)) return;
+  e.preventDefault();
+  if (!currentTrack) return;
+
+  // Update like text
+  ctxLike.innerHTML = isCurrentTrackLiked
+    ? '<span class="ctx-icon">♥</span> Unlike Song'
+    : '<span class="ctx-icon">♡</span> Like Song';
+
+  // Position menu
+  const x = Math.min(e.clientX, window.innerWidth - 170);
+  const y = Math.min(e.clientY, window.innerHeight - 160);
+  contextMenu.style.left = `${x}px`;
+  contextMenu.style.top = `${y}px`;
+  contextMenu.classList.remove('hidden');
+});
+
+// Escape key hides context menu
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') contextMenu.classList.add('hidden');
+});
+
+ctxLike.addEventListener('click', () => {
+  contextMenu.classList.add('hidden');
+  btnLike.click();
+});
+
+ctxShare.addEventListener('click', () => {
+  contextMenu.classList.add('hidden');
+  if (currentTrack && currentTrack.external_urls && currentTrack.external_urls.spotify) {
+    navigator.clipboard.writeText(currentTrack.external_urls.spotify);
+  }
+});
+
+ctxOpenSpotify.addEventListener('click', () => {
+  contextMenu.classList.add('hidden');
+  if (currentTrack && currentTrack.external_urls && currentTrack.external_urls.spotify) {
+    window.electronAPI.openExternal(currentTrack.external_urls.spotify);
+  }
+});
+
+ctxCopyName.addEventListener('click', () => {
+  contextMenu.classList.add('hidden');
+  if (currentTrack) {
+    const text = `${currentTrack.name} - ${currentTrack.artists.map(a => a.name).join(', ')}`;
+    navigator.clipboard.writeText(text);
+  }
+});
+
+ctxCopyLink.addEventListener('click', () => {
+  contextMenu.classList.add('hidden');
+  if (currentTrack && currentTrack.external_urls && currentTrack.external_urls.spotify) {
+    navigator.clipboard.writeText(currentTrack.external_urls.spotify);
+  }
+});
+
+// ─── Lyrics Cache ───────────────────────────────────────────────────────────
+const LYRICS_CACHE_KEY = 'spotify_lyrics_cache';
+const LYRICS_CACHE_MAX = 200; // Max cached tracks
+
+function getLyricsCache() {
+  try {
+    return JSON.parse(localStorage.getItem(LYRICS_CACHE_KEY) || '{}');
+  } catch { return {}; }
+}
+
+function setLyricsCache(trackId, lrcData) {
+  const cache = getLyricsCache();
+  cache[trackId] = { data: lrcData, ts: Date.now() };
+  // Evict oldest entries if over limit
+  const keys = Object.keys(cache);
+  if (keys.length > LYRICS_CACHE_MAX) {
+    keys.sort((a, b) => cache[a].ts - cache[b].ts);
+    const toRemove = keys.slice(0, keys.length - LYRICS_CACHE_MAX);
+    toRemove.forEach(k => delete cache[k]);
+  }
+  localStorage.setItem(LYRICS_CACHE_KEY, JSON.stringify(cache));
+}
+
+function getCachedLyrics(trackId) {
+  const cache = getLyricsCache();
+  if (cache[trackId]) {
+    return cache[trackId].data;
+  }
+  return null;
+}
 
 // ─── Start ───────────────────────────────────────────────────────────────────────
 init();

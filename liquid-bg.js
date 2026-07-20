@@ -418,6 +418,32 @@ class LiquidBackground {
 
   destroy() {
     if (this.animId) cancelAnimationFrame(this.animId);
+    this.animId = null;
+    // Remove resize listener
+    if (this._onResize) {
+      window.removeEventListener('resize', this._onResize);
+      this._onResize = null;
+    }
+    // Release WebGL resources
+    const gl = this.gl;
+    if (gl && this.program) {
+      const shaders = gl.getAttachedShaders(this.program);
+      if (shaders) {
+        shaders.forEach(shader => {
+          gl.detachShader(this.program, shader);
+          gl.deleteShader(shader);
+        });
+      }
+      gl.deleteProgram(this.program);
+      this.program = null;
+      // Delete buffer
+      const buf = gl.getParameter(gl.ARRAY_BUFFER_BINDING);
+      if (buf) gl.deleteBuffer(buf);
+    }
+    // Lose context to free GPU memory
+    const ext = gl && gl.getExtension('WEBGL_lose_context');
+    if (ext) ext.loseContext();
+    this.gl = null;
   }
 }
 

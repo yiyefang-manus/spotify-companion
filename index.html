@@ -16,6 +16,17 @@
   <!-- Frosted glass background (hidden by default) -->
   <div id="frosted-bg" class="frosted-bg hidden"></div>
 
+
+  <!-- Custom Context Menu -->
+  <div id="context-menu" class="context-menu hidden">
+    <div class="context-menu-item" id="ctx-like"><span class="ctx-icon">♡</span> Like Song</div>
+    <div class="context-menu-item" id="ctx-share"><span class="ctx-icon">↗</span> Share</div>
+    <div class="context-menu-item" id="ctx-open-spotify"><span class="ctx-icon">🎵</span> Open in Spotify</div>
+    <div class="context-menu-divider"></div>
+    <div class="context-menu-item" id="ctx-copy-name"><span class="ctx-icon">📋</span> Copy Song Name</div>
+    <div class="context-menu-item" id="ctx-copy-link"><span class="ctx-icon">🔗</span> Copy Song Link</div>
+  </div>
+
   <!-- Setup Screen -->
   <div id="setup-screen" class="screen">
     <div class="setup-content">
@@ -81,6 +92,10 @@
 
         <!-- Right: Extra Controls -->
         <div class="player-right">
+          <button id="btn-like" class="control-btn small" title="Like">
+            <svg id="icon-heart-outline" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M16.5 3c-1.74 0-3.41.81-4.5 2.09C10.91 3.81 9.24 3 7.5 3 4.42 3 2 5.42 2 8.5c0 3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 19.58 3 16.5 3zm-4.4 15.55l-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.89-3.14 5.74-7.9 10.05z"/></svg>
+            <svg id="icon-heart-filled" viewBox="0 0 24 24" width="14" height="14" class="hidden"><path fill="#1DB954" d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+          </button>
           <button id="btn-lyrics" class="control-btn small" title="Lyrics">
             <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm-1 9H7v-2h6v2zm2-4H7V5h8v2zm-2 8H7v-2h6v2z"/></svg>
           </button>
@@ -146,6 +161,20 @@
             <button id="bg-static" class="bg-btn" title="Static Liquid">🧊</button>
             <button id="bg-frosted" class="bg-btn" title="Frosted Glass">❄️</button>
             <button id="bg-album" class="bg-btn" title="Album Art">🎨</button>
+          </div>
+        </div>
+        <div class="settings-row">
+          <label class="settings-label">BG Opacity</label>
+          <div class="size-control">
+            <span class="size-preview" id="opacity-preview">90%</span>
+            <input type="range" id="bg-opacity-slider" min="20" max="100" value="90" step="5">
+          </div>
+        </div>
+        <div class="settings-row">
+          <label class="settings-label">BG Blur</label>
+          <div class="blur-toggle">
+            <button id="blur-on" class="theme-btn active" title="On">On</button>
+            <button id="blur-off" class="theme-btn" title="Off">Off</button>
           </div>
         </div>
       </div>

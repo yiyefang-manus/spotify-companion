@@ -22,11 +22,52 @@ let tokenExpiry = null;
 let codeVerifier = null;
 let activeRedirectUri = null;
 
+// Token persistence
+const TOKEN_FILE = path.join(app.getPath('userData'), 'spotify-tokens.json');
+
+function saveTokensToDisk() {
+  try {
+    if (accessToken && refreshToken) {
+      fs.writeFileSync(TOKEN_FILE, JSON.stringify({
+        accessToken,
+        refreshToken,
+        tokenExpiry
+      }));
+    }
+  } catch (e) { /* ignore */ }
+}
+
+function loadTokensFromDisk() {
+  try {
+    if (fs.existsSync(TOKEN_FILE)) {
+      const data = JSON.parse(fs.readFileSync(TOKEN_FILE, 'utf-8'));
+      if (data.refreshToken) {
+        accessToken = data.accessToken || null;
+        refreshToken = data.refreshToken;
+        tokenExpiry = data.tokenExpiry || 0;
+        return true;
+      }
+    }
+  } catch (e) { /* ignore */ }
+  return false;
+}
+
+function clearTokensFromDisk() {
+  try {
+    if (fs.existsSync(TOKEN_FILE)) {
+      fs.unlinkSync(TOKEN_FILE);
+    }
+  } catch (e) { /* ignore */ }
+}
+
+// Load saved tokens on startup
+loadTokensFromDisk();
+
 // Window position persistence
 const BOUNDS_FILE = path.join(app.getPath('userData'), 'window-bounds.json');
 let isProgrammaticResize = false; // Prevent saveBounds during programmatic resizes
 let isInMiniMode = false;
-let preMiniWidth = 520; // Store width before entering mini mode
+let preMiniWidth = 600; // Store width before entering mini mode
 let preMiniX = undefined; // Store x position before mini mode
 
 function loadSavedBounds() {
@@ -103,15 +144,57 @@ function handleProtocolCallback(urlStr) {
   }
 }
 
+// ─── Window Edge Snapping ──────────────────────────────────────────────────
+const SNAP_THRESHOLD = 15; // px distance to trigger snap
+
+function snapToEdge() {
+  if (!mainWindow || isProgrammaticResize) return;
+  const { screen } = require('electron');
+  const bounds = mainWindow.getBounds();
+  const display = screen.getDisplayNearestPoint({ x: bounds.x, y: bounds.y });
+  const workArea = display.workArea;
+
+  let snapped = false;
+  let newX = bounds.x;
+  let newY = bounds.y;
+
+  // Snap to left edge
+  if (Math.abs(bounds.x - workArea.x) < SNAP_THRESHOLD) {
+    newX = workArea.x;
+    snapped = true;
+  }
+  // Snap to right edge
+  if (Math.abs((bounds.x + bounds.width) - (workArea.x + workArea.width)) < SNAP_THRESHOLD) {
+    newX = workArea.x + workArea.width - bounds.width;
+    snapped = true;
+  }
+  // Snap to top edge
+  if (Math.abs(bounds.y - workArea.y) < SNAP_THRESHOLD) {
+    newY = workArea.y;
+    snapped = true;
+  }
+  // Snap to bottom edge
+  if (Math.abs((bounds.y + bounds.height) - (workArea.y + workArea.height)) < SNAP_THRESHOLD) {
+    newY = workArea.y + workArea.height - bounds.height;
+    snapped = true;
+  }
+
+  if (snapped && (newX !== bounds.x || newY !== bounds.y)) {
+    isProgrammaticResize = true;
+    mainWindow.setPosition(newX, newY, false);
+    setTimeout(() => { isProgrammaticResize = false; }, 150);
+  }
+}
+
 function createMainWindow() {
   const saved = loadSavedBounds();
 
   mainWindow = new BrowserWindow({
-    width: saved ? saved.width : 520,
+    width: saved ? saved.width : 600,
     height: 60,
     x: saved ? saved.x : undefined,
     y: saved ? saved.y : undefined,
-    minWidth: 520,
+    minWidth: 600,
     minHeight: 50,
     maxHeight: 350,
     frame: false,
@@ -135,7 +218,10 @@ function createMainWindow() {
   mainWindow.setVisibleOnAllWorkspaces(true);
 
   // Save position only on user-initiated moves/resizes (not programmatic)
-  mainWindow.on('moved', saveBounds);
+  mainWindow.on('moved', () => {
+    saveBounds();
+    snapToEdge();
+  });
   mainWindow.on('resized', saveBounds);
 
   mainWindow.on('closed', () => {
@@ -172,8 +258,8 @@ ipcMain.handle('resize-for-player', () => {
       mainWindow.setMinimumSize(1, 1);
       mainWindow.setMaximumSize(10000, 10000);
       mainWindow.setBounds({ x: bounds.x, y: bounds.y - deltaH, width: bounds.width, height: newHeight });
-      mainWindow.setMinimumSize(520, 90);
-      mainWindow.setMaximumSize(700, 140);
+      mainWindow.setMinimumSize(600, 90);
+      mainWindow.setMaximumSize(800, 140);
     });
   }
 });
@@ -182,13 +268,13 @@ ipcMain.handle('resize-for-lyrics', () => {
   if (mainWindow) {
     programmaticResize(() => {
       const bounds = mainWindow.getBounds();
-      const newHeight = 125;
+      const newHeight = 155;
       const deltaH = newHeight - bounds.height;
       mainWindow.setMinimumSize(1, 1);
       mainWindow.setMaximumSize(10000, 10000);
       mainWindow.setBounds({ x: bounds.x, y: bounds.y - deltaH, width: bounds.width, height: newHeight });
-      mainWindow.setMinimumSize(520, 90);
-      mainWindow.setMaximumSize(700, 140);
+      mainWindow.setMinimumSize(600, 90);
+      mainWindow.setMaximumSize(800, 170);
     });
   }
 });
@@ -202,8 +288,8 @@ ipcMain.handle('resize-no-lyrics', () => {
       mainWindow.setMinimumSize(1, 1);
       mainWindow.setMaximumSize(10000, 10000);
       mainWindow.setBounds({ x: bounds.x, y: bounds.y - deltaH, width: bounds.width, height: newHeight });
-      mainWindow.setMinimumSize(520, 90);
-      mainWindow.setMaximumSize(700, 140);
+      mainWindow.setMinimumSize(600, 90);
+      mainWindow.setMaximumSize(800, 140);
     });
   }
 });
@@ -212,7 +298,7 @@ ipcMain.handle('resize-for-setup', () => {
   if (mainWindow) {
     programmaticResize(() => {
       mainWindow.setMinimumSize(380, 50);
-      mainWindow.setSize(520, 60, true);
+      mainWindow.setSize(580, 60, true);
     });
   }
 });
@@ -226,8 +312,8 @@ ipcMain.handle('resize-for-settings', (event, requestedHeight) => {
       mainWindow.setMinimumSize(1, 1);
       mainWindow.setMaximumSize(10000, 10000);
       mainWindow.setBounds({ x: bounds.x, y: bounds.y - deltaH, width: bounds.width, height: newHeight });
-      mainWindow.setMinimumSize(520, 90);
-      mainWindow.setMaximumSize(700, 400);
+      mainWindow.setMinimumSize(600, 90);
+      mainWindow.setMaximumSize(800, 400);
     });
   }
 });
@@ -241,8 +327,8 @@ ipcMain.handle('resize-for-devices', (event, requestedHeight) => {
       mainWindow.setMinimumSize(1, 1);
       mainWindow.setMaximumSize(10000, 10000);
       mainWindow.setBounds({ x: bounds.x, y: bounds.y - deltaH, width: bounds.width, height: newHeight });
-      mainWindow.setMinimumSize(520, 90);
-      mainWindow.setMaximumSize(700, 400);
+      mainWindow.setMinimumSize(600, 90);
+      mainWindow.setMaximumSize(800, 400);
     });
   }
 });
@@ -276,7 +362,7 @@ ipcMain.handle('resize-from-mini', () => {
 
     programmaticResize(() => {
       const bounds = mainWindow.getBounds();
-      const newWidth = preMiniWidth || 520;
+      const newWidth = preMiniWidth || 600;
       const newHeight = 105;
       const deltaH = newHeight - bounds.height;
       // Restore to original x position if available
@@ -284,8 +370,8 @@ ipcMain.handle('resize-from-mini', () => {
       mainWindow.setMinimumSize(1, 1);
       mainWindow.setMaximumSize(10000, 10000);
       mainWindow.setBounds({ x: newX, y: bounds.y - deltaH, width: newWidth, height: newHeight });
-      mainWindow.setMinimumSize(520, 90);
-      mainWindow.setMaximumSize(700, 140);
+      mainWindow.setMinimumSize(600, 90);
+      mainWindow.setMaximumSize(800, 140);
     });
   }
 });
@@ -348,6 +434,7 @@ ipcMain.handle('exchange-code', async (event, { code, clientId, redirectUri }) =
     accessToken = data.access_token;
     refreshToken = data.refresh_token;
     tokenExpiry = Date.now() + (data.expires_in * 1000);
+    saveTokensToDisk();
     return { accessToken, refreshToken, tokenExpiry };
   } catch (err) {
     return { error: err.message };
@@ -362,6 +449,15 @@ ipcMain.handle('set-token', (event, data) => {
   accessToken = data.accessToken;
   refreshToken = data.refreshToken;
   tokenExpiry = data.tokenExpiry;
+  saveTokensToDisk();
+});
+
+ipcMain.handle('logout', () => {
+  accessToken = null;
+  refreshToken = null;
+  tokenExpiry = null;
+  clearTokensFromDisk();
+  return { success: true };
 });
 
 ipcMain.handle('refresh-spotify-token', async (event, clientId) => {
@@ -385,6 +481,7 @@ ipcMain.handle('refresh-spotify-token', async (event, clientId) => {
     accessToken = data.access_token;
     if (data.refresh_token) refreshToken = data.refresh_token;
     tokenExpiry = Date.now() + (data.expires_in * 1000);
+    saveTokensToDisk();
     return { accessToken, refreshToken, tokenExpiry };
   } catch (err) {
     return { error: err.message };
@@ -402,6 +499,16 @@ ipcMain.handle('open-external', async (event, urlStr) => {
 
 ipcMain.handle('quit-app', () => {
   app.quit();
+});
+
+ipcMain.handle('set-vibrancy', (event, type) => {
+  if (mainWindow) {
+    if (type) {
+      mainWindow.setVibrancy(type);
+    } else {
+      mainWindow.setVibrancy(null);
+    }
+  }
 });
 
 // ─── App Lifecycle ──────────────────────────────────────────────────────────
